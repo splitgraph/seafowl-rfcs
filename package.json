@@ -1,0 +1,16 @@
+{
+  "name": "seafowl-rfcs",
+  "version": "0.0.0",
+  "description": "RFC docs for new Seafowl features.",
+  "scripts": {
+    "lint": "markdownlint '**/*.md' --ignore node_modules",
+    "format:write": "prettier --write '**/*.md'",
+    "format:check": "prettier --check '**/*.md'"
+  },
+  "private": true,
+  "license": "Proprietary",
+  "devDependencies": {
+    "markdownlint-cli": "0.28.1",
+    "prettier": "2.4.1"
+  }
+}
