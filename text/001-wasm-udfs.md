@@ -96,6 +96,27 @@ often prioritize development workflows which use the schema for code generation.
 In this case, the UDFs' signature is not known at the time Seafowl is compiled,
 so we need a solution which does not require compiling the schema.
 
+Seafowl uses Apache Arrow, which could open the door to using
+[Apache Arrow Flight](https://github.com/apache/arrow-rs/tree/master/arrow-flight),
+a solution for minimizing data (de)serialization during processing with multiple
+network nodes (see
+[1](https://voltrondata.com/blog/apache-arrow-flight-primer/),
+[2](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/)).
+Theoretically, Seafowl and the WASM UDF
+[could communicate over gRPC](https://www.verygoodsecurity.com/blog/posts/using-grpc-and-wasm-to-transform-data-inside-envoy-proxy)
+as required by Flight. While tempting, there are some significant drawbacks to
+this approach:
+
+- Only languages for which an Apache Arrow Flight binding exists can be used to
+  write UDFs.
+- The WASM module must include Apache Arrow Flight with all its dependencies.
+- The data Seafowl Receives is columnar. For each column, Seafowl gets an array
+  of column values, one for each row. UDFs expect row-like tuples. This
+  transformation prevents us from using the original serialized Arrow data as
+  originally received. Theoretically, it could be possible to transpose the
+  columnar input to row-tuples but keep the serialization of individual scalar
+  values, but this seems a lot more complex than what its worth.
+
 [MessagePack](https://msgpack.org/index.html) is an efficient binary format
 similar to JSON with support for many programming languages. MessagePack has
 first class support for the numeric types offered by Seafowl as well as strings,
@@ -278,20 +299,21 @@ console.log(msgpack.decode(fs.readFileSync(process.argv[2])));
 These changes are not strictly necessary for supporting complex datatypes in
 UDFs, but would go a long way for the overall UDF experience.
 
-- The ability to replace (`CREATE OR REPLACE FUNCTION ...`) and delete (`DROP FUNCTION ...`) UDFs. Not only is it wasteful to
-  store old functions' WASM modules indefinitely, it also forces users to
-  rewrite queries which depend on these functions when the function is modified,
-  since the new version will also need to have a new name.
+- The ability to replace (`CREATE OR REPLACE FUNCTION ...`) and delete
+  (`DROP FUNCTION ...`) UDFs. Not only is it wasteful to store old functions'
+  WASM modules indefinitely, it also forces users to rewrite queries which
+  depend on these functions when the function is modified, since the new version
+  will also need to have a new name.
 - The ability to load UDF WASM Modules from an HTTP URL instead of providing it
   b64-ed as part of the JSON UDF metadata.
-- A first class `CREATE FUNCTION` statement syntax which doesn't pass
-  arguments as JSON, eg:
-   
-    CREATE [OR REPLACE] FUNCTION concat2
-    RETURNING TEXT
-    [LANGUAGE wasiMessagePack]
-    MODULE 'https://...'
-    ENTRY 'concat2'`
+- A first class `CREATE FUNCTION` statement syntax which doesn't pass arguments
+  as JSON, eg:
+
+      CREATE [OR REPLACE] FUNCTION concat2
+      RETURNING TEXT
+      [LANGUAGE wasiMessagePack]
+      MODULE 'https://...'
+      ENTRY 'concat2'`
 
   The currently required `input_type` field may be omitted if Seafowl no longer
   attempts to verify UDF arguments prior to invocation.
