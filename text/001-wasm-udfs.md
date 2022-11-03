@@ -11,10 +11,6 @@ This RFC is the response to
 extend the existing support for WASM UDFs allowing for non-primitive data types
 such as strings in arguments and return values.
 
-# Table of contents
-
-[[_TOC_]]
-
 # Motivation
 
 Seafowl already has the ability to introduce
@@ -36,10 +32,10 @@ falls short in several important ways:
 1. Aso currently unsupported user-defined table functions (the opposite of
    aggregate functions) may return a list of tuples, which is also not possible
    with the current limitations.
-1. Not a priority on the short term, but variadic functions, eg
-   `CONCAT('prefix', table1.col1, 'suffix')` need to be flexible enough to
-   support input with different signatures (currently the tuple's primitive
-   types must match the declared signature of the UDF exactly).
+1. Not a priority on the short term, but scalar functions with variable number
+   of arguments, eg: `CONCAT('prefix', table1.col1, 'suffix')` and those which
+   accept multiple types, eg: `MAX(0.5, 1)` need more flexibility than what can
+   be currently described in the `CREATE FUNCTION` expression.
 
 # Terminology
 
@@ -279,9 +275,26 @@ console.log(msgpack.decode(fs.readFileSync(process.argv[2])));
 
 ## Feature wishlist
 
-- The ability to delete UDFs, `DROP FUNCTION ...`
+These changes are not strictly necessary for supporting complex datatypes in
+UDFs, but would go a long way for the overall UDF experience.
+
+- The ability to replace (`CREATE OR REPLACE FUNCTION ...`) and delete (`DROP FUNCTION ...`) UDFs. Not only is it wasteful to
+  store old functions' WASM modules indefinitely, it also forces users to
+  rewrite queries which depend on these functions when the function is modified,
+  since the new version will also need to have a new name.
 - The ability to load UDF WASM Modules from an HTTP URL instead of providing it
   b64-ed as part of the JSON UDF metadata.
+- A first class `CREATE FUNCTION` statement syntax which doesn't pass
+  arguments as JSON, eg:
+   
+    CREATE [OR REPLACE] FUNCTION concat2
+    RETURNING TEXT
+    [LANGUAGE wasiMessagePack]
+    MODULE 'https://...'
+    ENTRY 'concat2'`
+
+  The currently required `input_type` field may be omitted if Seafowl no longer
+  attempts to verify UDF arguments prior to invocation.
 
 ## Key open decisions
 
