@@ -106,6 +106,8 @@ Ideally the calling convention for UDFs should be:
 
 ## Serialization format
 
+**tl;dr** I recommend MessagePack.
+
 `JSON` is so commonly used as a serialization format, that it's become the
 default, especially on the web. The problem with JSON in this case is that it
 has a single numeric type: `f64`. Seafowl's set of supported numeric types is
@@ -143,11 +145,11 @@ this approach:
   values, this seems a lot more complex than what its worth.
 
 [MessagePack](https://msgpack.org/index.html) is an efficient binary format
-similar to JSON with support for many programming languages. MessagePack has
-first class support for the numeric types offered by Seafowl as well as strings,
-maps and arrays. Any tuple which can be currently `SELECT`-ed in Seafowl has a
-trivial mapping to a MessagePack-encodable object. WASM MessagePack
-implementations include:
+similar to JSON with support for many programming languages. It has first class
+support for the numeric types offered by Seafowl as well as strings, maps and
+arrays. Any tuple which can be currently `SELECT`-ed in Seafowl has a trivial
+mapping to a MessagePack-encodable object. WASM MessagePack implementations
+include:
 
 - [msgpack-rust](https://github.com/3Hren/msgpack-rust) for Rust.
 - [MPack](https://github.com/dsyer/mpack-wasm) for C and C++.
@@ -185,6 +187,11 @@ supporting both rust hosts and WASM guests. The developers urge everyone
 interested in using this in production to hold their horses and look for other
 alternatives while the WIT standard is finalized, I'd guess somewhere between
 12 - 18 months from now.
+
+WIT is designed to be used with code generators; Seafowl need to load UDFs
+directly, so even when WIT is mature enough to be used, it might not be a good
+fit for the same reason Protocol Buffers isn't a convenient serialization
+format.
 
 ### WaPC
 
@@ -239,7 +246,7 @@ which Seafowl uses to encode the UDF's properties as JSON, eg:
 CREATE FUNCTION my_udf AS '
 {
   "entrypoint": "wasm_function_name",
-  "language": "wasiMessagePack",
+  "language": "wasmMessagePack",
   "input_types": ["TEXT", "TEXT"],
   "return_type": "TEXT",
   "data": "AGFzbQEAAAABDQJgAX0BfWADfX9/AX0DBQQAAAABBQQBAUREBxgDBnNpb..."
@@ -273,12 +280,13 @@ several languages with significant differences in module size and performance.
 Fortunately, Seafowl has no problem registering even the multi-Mb Rust module
 UDF, no query size limit prevented this so far.
 
-The interface between Seafowl and UDF is the mostly the programming language's
-MessagePack implementation.
+Decoding input arguments and encoding results can be abstracted away from UDF
+authors. The interface available to them is the MessagePack library of their
+programming language.
 
 The following timed queries use the `tripdata` table from the Seafowl demo,
 which has > 2.4 million rows. I used a `release` build of seafowl and averaged
-the processing time of 50 queries for each row in the table above.
+the processing time of 50 queries for each row in the table below.
 
 | test                                                              | avg time |
 | ----------------------------------------------------------------- | -------- |
@@ -291,45 +299,33 @@ the processing time of 50 queries for each row in the table above.
 
 ## Error messages, status codes
 
-In addition to `stdout`, WASI also offers `stderr`, which can be used by the UDF
-to pass error messages back to Seafowl. Currently this is unimplemented, but
-returning an integer from the UDF could indicate successful execution of the
-function (`0` for success, otherwise an error code). Unstructured UTF-8 error
-messages should be permitted via `stderr`, but structured error data (like the
-JS `Error` object consisting of `name`, `message`, `stack`) could also be
-returned via `stderr` (or `stdout` with certain error codes).
+As mentined earlier, WASI's `stderr` is an enormous help in debugging UDFs.
+Currently, there's no implemented way for a UDF to signal errors, although
+writing no output when the return type of the UDF is not `NULL` should trigger
+an error. Some possibilities:
+
+- In addition to the MessagePack bytestream, UDFs should also return an integer
+  exit code, similar to C programs.
+- We could wrap the response in a MessagePack "envelope", eg:
+  `{data?: any, error?: {message: string, code: i32, stack?: string}}`.
+  Successfully computed results would be written to `data`, while erroronous
+  execution would lead to the `error` field being present.
+
+It would be useful to have standard error codes for common errors:
+
+- Bad input: malformed input
+  `expected an array of elements, found empty input, object or primitive` or
+  `input could not be parsed as MessagePack`
+- Bad input: wrong input arity, `expected N arguments, received X`
+- Bad input: wrong input type, `expected type T for argument X, received U`
+- Bad input: wrong input value, `DIV(): division by zero is forbidden`
+
+These errors may also arise when Seafowl reads the UDFs result.
 
 ## Testing UDFs outside of Seafowl
 
-A big advantage of using WASI is that it's easy to invoke UDFs from the command
-line. The Messagepack-encoded input can be written to a file, for example with
-nodejs:
-
-```javascript
-// usage: node encode_args.js > input
-const msgpack = require("@msgpack/msgpack");
-const args = ["foo", "bar"];
-process.stdout.write(msgpack.encode(args));
-```
-
-The UDF may then be executed using `wasmtime` or `wasirun` with the arguments
-passed in from `stdin` and return values received via `stdout`.
-
-```bash
-wasmtime --dir . build/release.wasm --invoke udf < input > out
-```
-
-Output will also be messagepack-encoded, to decode we can use:
-
-```javascript
-// usage: node decode_output.js output
-const fs = require("fs");
-const msgpack = require("@msgpack/msgpack");
-console.log(msgpack.decode(fs.readFileSync(process.argv[2])));
-```
-
-Unfortunately, for the shared linear memory approach, a separate "test harness"
-is required to run the UDFs outside of Seafowl.
+It can be convenient to test UDFs outside of Seafowl during development. This
+requires a harness host which instantiates and invokes the WASM function.
 
 ## Feature wishlist
 
@@ -348,38 +344,33 @@ UDFs, but would go a long way for the overall UDF experience.
 
       CREATE [OR REPLACE] FUNCTION concat2
       RETURNING TEXT
-      [LANGUAGE wasiMessagePack]
+      [LANGUAGE 'wasmMessagePack']
       MODULE 'https://...'
-      ENTRY 'concat2'`
+      ENTRY 'concat2';
 
-  The currently required `input_type` field may be omitted if Seafowl no longer
-  attempts to verify UDF arguments prior to invocation.
+  The currently required `input_type` field may be omitted since Seafowl cannot
+  reliably verify UDF arguments prior to invocation (it's up to the UDF to
+  verify input arguments).
+
+- Planned support for UDAFs require multiple entrypoints to be specified in a
+  single `CREATE` statement, so the entry's type may need to be optionally
+  specified, e.g.:
+
+      CREATE [OR REPLACE] AGGREGATE FUNCTION avg
+      RETURNING BIGINT
+      [LANGUAGE wasmMessagePack]
+      MODULE 'https://...'
+      ENTRY (
+          ('row_accumulator', 'avg_rowacc'),
+          ('merge_batch', 'avg_mergebatch'));
 
 ## Key open decisions
 
-- Are we happy with the approach recommended in this RFC of replacing primitive
-  on-stack arguments and return values with serialized input and output for
-  UDFs? If so, are we happy with MessagePack as a serialization format?
-- Who is responsible for verifying the UDF type signatures against the type of
-  the selected tuple and expected response? With the bytestream-passing
-  approach, there is no guarantee that the UDF will return what it promises to
-  return in the `CREATE FUNCTION` statement.
 - How many `language` types do we want to support simultaneously? Should we
-  eventually deprecate `Wasm` if we introduce `wasiMessagePack`?
-- Which WASM languages should receive first-class support? Rust is pretty
+  eventually deprecate `Wasm` if we introduce `wasmMessagePack`?
+- Which WASM languages should receive first-class support? Rust and C are pretty
   obvious, but eg: C++ programmers may prefer a different MessagePack library
   than C devs.
-- Performance considerations: How expensive is it to use WASI `stdin` and
-  `stdout`? If we used raw memory or WASI env vars, would that be faster? What's
-  the right performance vs simple dev experience tradeoff here?
-- UDF lifecycle: should modules' `_initialize` function be called before the
-  exported UDF function is invoked during `SELECT`s? If so, when? My take is
-  that we shouldn't do this: UDFs should be considered stateless.
-- Using MessagePack for encoding input and output opens the door to user-defined
-  aggregate functions, table functions and scalar functions with variable
-  argument count. Are these things features we want to leave open or even
-  support in our calling convention or should be ignore these use cases entirely
-  for now and introduce a new `language` when users need these things.
 - How do Seafowl users receive warning messages emitted by UDFs if a result
   value can be computed? Some options are leaving such warning unsupported (any
   warning is an error), or displaying them only in the seafowl access log.
